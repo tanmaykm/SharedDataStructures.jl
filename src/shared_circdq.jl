@@ -4,7 +4,7 @@ SharedCircularDeque{T}(n)
 Create a double-ended queue of maximum capacity `n`, implemented as a circular buffer. The element type is `T`.
 The data buffers are shared memory segments, accessible across processes on the same physical node.
 
-Instances can be serialized and deserialized or created afresh using identical name and capacity.
+Instances can be serialized and deserialized or created afresh using identical path and capacity.
 
 Methods on the datastructure itself are not locked 
     - to avoid deadlock due to internal recursive calls
@@ -12,9 +12,9 @@ Methods on the datastructure itself are not locked
 However they can be locked by the caller using the `withlock(q.lck) do ... end` syntax.
 """
 struct SharedCircularDeque{T}
-    name::String
-    buffer::SharedVector{T}
-    state::SharedVector{Int} # capacity, n, first, last
+    path::String
+    buffer::SysVSharedArray{T,1}
+    state::SysVSharedArray{Int,1} # capacity, n, first, last
     lck::NamedSemaphore # lock operations between processes
 end
 
@@ -23,105 +23,123 @@ const LEN = 2
 const FST = 3
 const LST = 4
 
-function SharedCircularDeque{T}(name::String, n::Int) where {T}
-    buffer = shm_mmap_array(T, (n,), name*"buffer", JL_O_CREAT | JL_O_RDWR)
-    state = shm_mmap_array(T, (4,), name*"state", JL_O_CREAT | JL_O_RDWR)
-    state[CAP] = n # capacity
-    state[LEN] = 0 # n
-    state[FST] = 1 # first
-    state[LST] = n # last
-    lck = NamedSemaphore(name*"lock")
-    SharedCircularDeque{T}(name, buffer, state, lck)
+function SharedCircularDeque{T}(path::String, capacity::Int; create::Bool=false) where {T}
+    buffer = SysVSharedVector((path,1), capacity, T)
+    state = SysVSharedVector((path,2), 4, Int)
+    if create
+        S = state.A
+        S[CAP] = capacity # capacity
+        S[LEN] = 0        # n
+        S[FST] = 1        # first
+        S[LST] = capacity # last
+    end
+    lck = NamedSemaphore("/$(hash(path))")
+    SharedCircularDeque{T}(path, buffer, state, lck)
 end
 
 function Base.hash(D::SharedCircularDeque, h::UInt)
     h += 0xe4fbea67fe10ce78 % UInt
-    h = hash(D.name, h)
+    h = hash(D.path, h)
 end
 
-Base.length(D::SharedCircularDeque) = D.state[LEN]
+Base.length(D::SharedCircularDeque) = D.state.A[LEN]
 Base.eltype(::Type{SharedCircularDeque{T}}) where {T} = T
-capacity(D::SharedCircularDeque) = D.state[CAP]
+capacity(D::SharedCircularDeque) = D.state.A[CAP]
 
 function Base.empty!(D::SharedCircularDeque)
-    D.state[LEN] = 0
-    D.state[FST] = 1
-    D.state[LST] = D.state[CAP]
+    S = D.state.A
+    S[LEN] = 0
+    S[FST] = 1
+    S[LST] = S[CAP]
     D
 end
 
 function Base.delete!(D::SharedCircularDeque)
-    shm_unlink(D.name*"buffer")
-    shm_unlink(D.name*"state")
+    delete!(D.state)
+    delete!(D.buffer)
     delete!(D.lck)
     nothing
 end
 
-Base.isempty(D::SharedCircularDeque) = D.state[LEN] == 0
+function Base.close(D::SharedCircularDeque)
+    close(D.state)
+    close(D.buffer)
+    close(D.lck)
+    nothing
+end
+
+Base.isempty(D::SharedCircularDeque) = D.state.A[LEN] == 0
 
 @inline function front(D::SharedCircularDeque)
-    @boundscheck D.state[LEN] > 0 || throw(BoundsError())
-    D.buffer[D.state[FST]]
+    S = D.state.A
+    @boundscheck S[LEN] > 0 || throw(BoundsError())
+    D.buffer.A[S[FST]]
 end
 
 @inline function back(D::SharedCircularDeque)
-    @boundscheck D.state[LEN] > 0 || throw(BoundsError())
-    D.buffer[D.state[LST]]
+    S = D.state.A
+    @boundscheck S[LEN] > 0 || throw(BoundsError())
+    D.buffer.A[S[LST]]
 end
 
 @inline function Base.push!(D::SharedCircularDeque, v)
-    @boundscheck D.state[LEN] < D.state[CAP] || throw(BoundsError()) # prevent overflow
-    D.state[LEN] += 1
-    tmp = D.state[LST]+1
-    D.state[LST] = ifelse(tmp > D.state[CAP], 1, tmp)  # wraparound
-    @inbounds D.buffer[D.state[LST]] = v
+    S = D.state.A
+    @boundscheck S[LEN] < S[CAP] || throw(BoundsError()) # prevent overflow
+    S[LEN] += 1
+    tmp = S[LST]+1
+    S[LST] = ifelse(tmp > S[CAP], 1, tmp)  # wraparound
+    @inbounds D.buffer.A[S[LST]] = v
     D
 end
 
 @inline function Base.pop!(D::SharedCircularDeque)
+    S = D.state.A
     v = back(D)
-    D.state[LEN] -= 1
-    tmp = D.state[LST] - 1
-    D.state[LST] = ifelse(tmp < 1, D.state[CAP], tmp)
+    S[LEN] -= 1
+    tmp = S[LST] - 1
+    S[LST] = ifelse(tmp < 1, S[CAP], tmp)
     v
 end
 
 @inline function Base.unshift!(D::SharedCircularDeque, v)
-    @boundscheck D.state[LEN] < D.state[CAP] || throw(BoundsError())
-    D.state[LEN] += 1
-    tmp = D.state[FST] - 1
-    D.state[FST] = ifelse(tmp < 1, D.state[CAP], tmp)
-    @inbounds D.buffer[D.state[FST]] = v
+    S = D.state.A
+    @boundscheck S[LEN] < S[CAP] || throw(BoundsError())
+    S[LEN] += 1
+    tmp = S[FST] - 1
+    S[FST] = ifelse(tmp < 1, S[CAP], tmp)
+    @inbounds D.buffer.A[S[FST]] = v
     D
 end
 
 @inline function Base.shift!(D::SharedCircularDeque)
+    S = D.state.A
     v = front(D)
-    D.state[LEN] -= 1
-    tmp = D.state[FST] + 1
-    D.state[FST] = ifelse(tmp > D.state[CAP], 1, tmp)
+    S[LEN] -= 1
+    tmp = S[FST] + 1
+    S[FST] = ifelse(tmp > S[CAP], 1, tmp)
     v
 end
 
 # getindex sans bounds checking
 @inline function _unsafe_getindex(D::SharedCircularDeque, i::Integer)
-    j = D.state[FST] + i - 1
-    if j > D.state[CAP]
-        j -= D.state[CAP]
+    S = D.state.A
+    j = S[FST] + i - 1
+    if j > S[CAP]
+        j -= S[CAP]
     end
-    @inbounds ret = D.buffer[j]
+    @inbounds ret = D.buffer.A[j]
     return ret
 end
 
 @inline function Base.getindex(D::SharedCircularDeque, i::Integer)
-    @boundscheck 1 <= i <= D.state[LEN] || throw(BoundsError())
+    @boundscheck 1 <= i <= D.state.A[LEN] || throw(BoundsError())
     return _unsafe_getindex(D, i)
 end
 
 # Iteration via getindex
 @inline Base.start(d::SharedCircularDeque) = 1
 @inline Base.next(d::SharedCircularDeque, i) = (_unsafe_getindex(d, i), i+1)
-@inline Base.done(d::SharedCircularDeque, i) = i == d.state[LEN] + 1
+@inline Base.done(d::SharedCircularDeque, i) = i == d.state.A[LEN] + 1
 
 function Base.show(io::IO, D::SharedCircularDeque{T}) where T
     print(io, "SharedCircularDeque{$T}([")

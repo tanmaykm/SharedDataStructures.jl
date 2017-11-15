@@ -17,36 +17,46 @@ end
 end
 
 function test_shared_circdq()
+    path = pwd()
     println("testing circular deque")
-    circdq = SharedCircularDeque{Int}("testq", 10)
-    println("    resetting and...")
-    delete!(circdq)
+    master_circdq = SharedCircularDeque{Int}(path, 10; create=true)
+    println("    closing and...")
+    close(master_circdq)
+    println("    deleting and...")
+    delete!(master_circdq)
     println("    ...creating new")
-    circdq = SharedCircularDeque{Int}("testq", 10)
+    master_circdq = SharedCircularDeque{Int}(path, 10; create=true)
 
     try
         W = workers()
         println("    workers: ", W)
         for w in W
-           remotecall_fetch(()->circdq=SharedCircularDeque{Int}("testq", 10), w)
+            remotecall_wait(()->(global circdq=SharedCircularDeque{Int}(path, 10); nothing), w)
         end
         println("    created on workers")
 
-        @test length(circdq) == 0
+        @test length(master_circdq) == 0
 
-        remotecall_fetch(()->pushwithlock!(circdq, 2), W[1])
-        @test length(circdq) == 1
-        remotecall_fetch(()->pushwithlock!(circdq, 3), W[2])
-        @test length(circdq) == 2
-
-        remotecall_fetch(()->shiftwithlock!(circdq), W[1])
-        @test length(circdq) == 1
-        remotecall_fetch(()->popwithlock!(circdq), W[2])
-        @test length(circdq) == 0
+        remotecall_wait(()->(pushwithlock!(circdq, 2); nothing), W[1])
+        @test remotecall_fetch(()->length(circdq), W[1]) == 1
+        @test length(master_circdq) == 1
+        remotecall_wait(()->(pushwithlock!(circdq, 3); nothing), W[2])
+        @test remotecall_fetch(()->length(circdq), W[2]) == 2
+        @test length(master_circdq) == 2
+        remotecall_wait(()->(shiftwithlock!(circdq); nothing), W[1])
+        @test remotecall_fetch(()->length(circdq), W[1]) == 1
+        @test length(master_circdq) == 1
+        remotecall_wait(()->(popwithlock!(circdq); nothing), W[2])
+        @test remotecall_fetch(()->length(circdq), W[2]) == 0
+        @test length(master_circdq) == 0
         println("    test done")
+        println("    closing...")
+        close(master_circdq)
+        remotecall_wait(()->close(circdq), W[1])
+        remotecall_wait(()->close(circdq), W[2])
     finally
         println("    deleting...")
-        delete!(circdq)
+        delete!(master_circdq)
         println("    done.")
     end
 end
