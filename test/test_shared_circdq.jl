@@ -40,15 +40,21 @@ function test_shared_circdq()
         remotecall_wait(()->(pushwithlock!(circdq, 2); nothing), W[1])
         @test remotecall_fetch(()->length(circdq), W[1]) == 1
         @test length(master_circdq) == 1
+        @test 2 in master_circdq
+        @test !(3 in master_circdq)
         remotecall_wait(()->(pushwithlock!(circdq, 3); nothing), W[2])
         @test remotecall_fetch(()->length(circdq), W[2]) == 2
         @test length(master_circdq) == 2
+        @test 3 in master_circdq
+        @test !(4 in master_circdq)
         remotecall_wait(()->(shiftwithlock!(circdq); nothing), W[1])
         @test remotecall_fetch(()->length(circdq), W[1]) == 1
         @test length(master_circdq) == 1
+        @test !(2 in master_circdq)
         remotecall_wait(()->(popwithlock!(circdq); nothing), W[2])
         @test remotecall_fetch(()->length(circdq), W[2]) == 0
         @test length(master_circdq) == 0
+        @test !(3 in master_circdq)
         println("    test done")
         println("    closing...")
         close(master_circdq)
