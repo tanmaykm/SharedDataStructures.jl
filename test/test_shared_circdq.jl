@@ -16,6 +16,22 @@ end
     end
 end
 
+function splicewithlock(circdq)
+    withlock(circdq.lck) do
+        push!(circdq, 1)
+        push!(circdq, 2)
+        push!(circdq, 3)
+        push!(circdq, 4)
+        push!(circdq, 5)
+        @test splice!(circdq, 3) == 3
+        @test splice!(circdq, 3) == 4
+        @test splice!(circdq, 1) == 1
+        @test splice!(circdq, 1) == 2
+        @test splice!(circdq, 1) == 5
+        @test length(circdq) == 0
+    end
+end
+
 function test_shared_circdq()
     path = pwd()
     println("testing circular deque")
@@ -36,6 +52,7 @@ function test_shared_circdq()
         println("    created on workers")
 
         @test length(master_circdq) == 0
+        splicewithlock(master_circdq)
 
         remotecall_wait(()->(pushwithlock!(circdq, 2); nothing), W[1])
         @test remotecall_fetch(()->length(circdq), W[1]) == 1
@@ -55,6 +72,9 @@ function test_shared_circdq()
         @test remotecall_fetch(()->length(circdq), W[2]) == 0
         @test length(master_circdq) == 0
         @test !(3 in master_circdq)
+
+        splicewithlock(master_circdq)
+
         println("    test done")
         println("    closing...")
         close(master_circdq)

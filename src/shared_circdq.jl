@@ -120,6 +120,37 @@ end
     v
 end
 
+@inline function Base.splice!(D::SharedCircularDeque, idx)
+    S = D.state.A
+    C = S[CAP]
+    j = S[FST] + idx - 1
+    if j > C
+        j -= C
+    end
+    A = D.buffer.A
+    @inbounds ret = A[j]
+
+    L = S[LST]
+    S[LST] = L - 1
+    S[LEN] -= 1
+
+    if L < j
+        while j < C
+            @inbounds A[j] = A[j+1]
+            j += 1
+        end
+        @inbounds A[j] = A[1]
+        j = 1
+    end
+
+    while j < L
+        @inbounds A[j] = A[j+1]
+        j += 1
+    end
+
+    return ret
+end
+
 # getindex sans bounds checking
 @inline function _unsafe_getindex(D::SharedCircularDeque, i::Integer)
     S = D.state.A
