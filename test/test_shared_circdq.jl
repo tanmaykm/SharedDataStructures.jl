@@ -23,6 +23,10 @@ function splicewithlock(circdq)
         push!(circdq, 3)
         push!(circdq, 4)
         push!(circdq, 5)
+
+        @test typeof(circdq[1:4]) == Vector{Int}
+        @test length(circdq[1:end]) == length(circdq)
+
         @test splice!(circdq, 3) == 3
         @test splice!(circdq, 3) == 4
         @test splice!(circdq, 1) == 1

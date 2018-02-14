@@ -43,6 +43,7 @@ function Base.hash(D::SharedCircularDeque, h::UInt)
 end
 
 Base.length(D::SharedCircularDeque) = D.state.A[LEN]
+Base.endof(D::SharedCircularDeque) = D.state.A[LEN]
 Base.eltype(::Type{SharedCircularDeque{T}}) where {T} = T
 capacity(D::SharedCircularDeque) = D.state.A[CAP]
 
@@ -166,6 +167,8 @@ end
     @boundscheck 1 <= i <= D.state.A[LEN] || throw(BoundsError())
     return _unsafe_getindex(D, i)
 end
+
+@inline getindex(D::SharedCircularDeque, R::UnitRange) = [D[idx] for idx in R]
 
 # Iteration via getindex
 @inline Base.start(d::SharedCircularDeque) = 1
