@@ -17,10 +17,10 @@ end
     end
 end
 
-function test_shm_dict()
+function test_shm_dict(keepkeys::Bool)
     path = pwd()
-    println("testing shm dict")
-    master_shmdict = ShmDict(path, 10^3, 128; create=true)
+    println("testing shm dict with keepkeys=", keepkeys)
+    master_shmdict = ShmDict(path, 10^3, 128; create=true, keepkeys=keepkeys)
     println("    closing and...")
     close(master_shmdict)
     println("    deleting and...")
@@ -60,6 +60,9 @@ function test_shm_dict()
         @test !haskey(master_shmdict, "456")
 
         @test_throws ErrorException master_shmdict["123"] = zeros(UInt8, 1024)
+        if keepkeys
+            @test_throws ErrorException master_shmdict[randstring(128)] = zeros(UInt8, 1024)
+        end
 
         println("    test done")
         println("    closing...")

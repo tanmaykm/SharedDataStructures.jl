@@ -8,4 +8,5 @@ include("test_shared_circdq.jl")
 include("test_shm_dict.jl")
 
 test_shared_circdq()
-test_shm_dict()
+test_shm_dict(false)
+test_shm_dict(true)

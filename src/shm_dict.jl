@@ -13,7 +13,9 @@ const primes = [53, 97, 193, 389, 769, 1543, 3079, 6151, 12289, 24593, 49157, 98
 # - with this scheme, loadfactor is around 0.5
 struct ShmDict
     capacity::UInt32            # requested capacity (actual capacity > 2 * requested capacity)
-    maxvalsize::UInt32          # max bytes in value
+    maxvalsize::UInt32          # max bytes in value (or value + key if keeping keys)
+    maxkeysize::UInt8           # max bytes in key
+    keepkeys::Bool              # whether to keep keys along with values (used for exact comparison, take up space from value buffer)
     shmid::Cint                 # shm id
     shmptr::Ptr{Void}           # shm pointer
     lck::NamedSemaphore         # lock for dict operations
@@ -23,7 +25,10 @@ struct ShmDict
     valsize::Vector{UInt32}     # size occupied in val
     val::Vector{UInt8}          # value bytes
 
-    function ShmDict(path::Union{String,Tuple{String,Integer}}, capacity::Integer, maxvalsize::Integer; create::Bool=false, create_exclusive::Bool=false, permission::Integer=0o660)
+    function ShmDict(path::Union{String,Tuple{String,Integer}}, capacity::Integer, maxvalsize::Integer; keepkeys::Bool=true, maxkeysize::Integer=32, create::Bool=false, create_exclusive::Bool=false, permission::Integer=0o660)
+        if keepkeys
+            maxvalsize = maxvalsize + maxkeysize + 1
+        end
         capacity = primes[min(length(primes), searchsortedfirst(primes, capacity))]
         memsz, offsets = _shmsize(capacity, maxvalsize)
         id = 0
@@ -41,7 +46,7 @@ struct ShmDict
         valsize = unsafe_wrap(Array, convert(Ptr{UInt32}, shmptr+shift!(offsets)), (2*capacity,))
         val = unsafe_wrap(Array, convert(Ptr{UInt8}, shmptr+shift!(offsets)), (2*maxvalsize*capacity,))
 
-        new(capacity, maxvalsize, shmid, shmptr, lck, used, khash, next, valsize, val)
+        new(capacity, maxvalsize, maxkeysize, keepkeys, shmid, shmptr, lck, used, khash, next, valsize, val)
     end
 end
 
@@ -71,55 +76,103 @@ function _byte_repr(val)
     take!(iob)
 end
 
-function haskey(D::ShmDict, key)
+function _key_matches(D::ShmDict, key, bucket)
+    if D.keepkeys
+        keystart = Int((D.maxvalsize * (bucket-1)) + 1)
+        keysz = D.val[keystart]
+        keystart += 1
+        keyend = Int(keystart + keysz - 1)
+        key == SubArray(D.val, (keystart:keyend,))
+    else
+        true
+    end
+end
+
+function _val_bytes(D::ShmDict, bucket)
+    if D.keepkeys
+        valstart = Int((D.maxvalsize * (bucket-1)) + 1)
+        keysz = D.val[valstart]
+        keyoffset = 1 + keysz
+        valstart += keyoffset
+        valend = Int(valstart + D.valsize[bucket] - keyoffset - 1)
+    else
+        valstart = Int((D.maxvalsize * (bucket-1)) + 1)
+        valend = Int(valstart + D.valsize[bucket] - 1)
+    end
+    SubArray(D.val, (valstart:valend,))
+end
+
+haskey(D::ShmDict, key) = haskey(D, _byte_repr(key))
+function haskey(D::ShmDict, key::Vector{UInt8})
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
     if D.used[bucket]
         while bucket > 0
-            (D.khash[bucket] === khash) && (return true)
+            (D.khash[bucket] === khash) && _key_matches(D, key, bucket) && (return true)
             bucket = D.next[bucket]
         end
     end
     return false
 end
 
-function getindex(D::ShmDict, key)
+getindex(D::ShmDict, key) = getindex(D, _byte_repr(key))
+function getindex(D::ShmDict, key::Vector{UInt8})
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
     if D.used[bucket]
         while bucket > 0
-            if D.khash[bucket] === khash
-                valstart = Int((D.maxvalsize * (bucket-1)) + 1)
-                valend = Int(valstart + D.valsize[bucket] - 1)
-                return SubArray(D.val, (valstart:valend,))
-            end
+            (D.khash[bucket] === khash) && _key_matches(D, key, bucket) && (return _val_bytes(D, bucket))
             bucket = D.next[bucket]
         end
     end
     error("key not found")
 end
 
-function _setbucket(D::ShmDict, bucket, khash, val, next=0)
+function _setbucket(D::ShmDict, bucket, khash::UInt64, key::Vector{UInt8}, val::Vector{UInt8}, next=0)
     D.used[bucket] = true
     D.khash[bucket] = khash
     D.next[bucket] = next
     D.valsize[bucket] = length(val)
     valstart = (D.maxvalsize * (bucket-1)) + 1
     valend = valstart + D.valsize[bucket] - 1
+    if D.keepkeys
+        keysz = UInt8(length(key))
+        D.valsize[bucket] += (1 + keysz)
+        D.val[valstart] = keysz
+        copy!(D.val, valstart+1, key, 1, keysz)
+        valstart += (1 + keysz)
+    end
     copy!(D.val, valstart, val, 1, length(val))
     nothing
 end
 
-setindex!(D::ShmDict, val, key) = setindex!(D, _byte_repr(val), key)
-function setindex!(D::ShmDict, val::Vector{UInt8}, key)
-    (length(val) > D.maxvalsize) && error("value size $(length(val)) greated than max allowed $(D.maxvalsize)")
+function _setbucket(D::ShmDict, bucket, khash::UInt64, keyval::Vector{UInt8}, next=0)
+    D.used[bucket] = true
+    D.khash[bucket] = khash
+    D.next[bucket] = next
+    D.valsize[bucket] = length(keyval)
+    valstart = (D.maxvalsize * (bucket-1)) + 1
+    valend = valstart + D.valsize[bucket] - 1
+    copy!(D.keyval, valstart, keyval, 1, length(keyval))
+    nothing
+end
+
+setindex!(D::ShmDict, val, key) = setindex!(D, _byte_repr(val), _byte_repr(key))
+function setindex!(D::ShmDict, val::Vector{UInt8}, key::Vector{UInt8})
+    lkey = length(key)
+    lval = length(val)
+    if D.keepkeys
+        (lkey > D.maxkeysize) && error("key size $lkey greater than max allowed $(D.maxkeysize)")
+        lval += (1 + lkey)
+    end
+    (lval > D.maxvalsize) && error("value size $(lval-lkey-1) greater than max allowed $(D.maxvalsize-D.maxkeysize-1)")
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
     if D.used[bucket]
         prevbucket = bucket
         while bucket > 0
             # navigate to matching entry or last entry
-            (D.khash[bucket] === khash) && break
+            (D.khash[bucket] === khash) && _key_matches(D, key, bucket) && break
             prevbucket = bucket
             bucket = D.next[bucket]
         end
@@ -131,18 +184,19 @@ function setindex!(D::ShmDict, val::Vector{UInt8}, key)
             D.next[prevbucket] = bucket
         end
     end
-    _setbucket(D, bucket, khash, val)
+    _setbucket(D, bucket, khash, key, val)
     val
 end
 
-function delete!(D::ShmDict, key)
+delete!(D::ShmDict, key) = delete!(D, _byte_repr(key))
+function delete!(D::ShmDict, key::Vector{UInt8})
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
     if D.used[bucket]
         prevbucket = bucket
         while bucket > 0
             # navigate to matching entry
-            (D.khash[bucket] === khash) && break
+            (D.khash[bucket] === khash) && _key_matches(D, key, bucket) && break
             prevbucket = bucket
             bucket = D.next[bucket]
         end
