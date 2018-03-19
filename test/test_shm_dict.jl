@@ -59,6 +59,8 @@ function test_shm_dict()
         remotecall_wait(()->(deletewithlock!(shmdict, "456"); nothing), W[1])
         @test !haskey(master_shmdict, "456")
 
+        @test_throws ErrorException master_shmdict["123"] = zeros(UInt8, 1024)
+
         println("    test done")
         println("    closing...")
         close(master_shmdict)

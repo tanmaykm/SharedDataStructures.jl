@@ -34,7 +34,6 @@ struct ShmDict
         tok = ftok(path, id)
         shmid = shmget(tok, memsz; create=create, create_exclusive=create_exclusive, permission=permission)
         shmptr = shmat(shmid)
-        create && ccall(:memset, Ptr{Void}, (Ptr{Void}, Cint, Csize_t), shmptr, 0, memsz)
 
         used = unsafe_wrap(Array, convert(Ptr{Bool}, shmptr), (2*capacity,))
         khash = unsafe_wrap(Array, convert(Ptr{UInt64}, shmptr+shift!(offsets)), (2*capacity,))
@@ -113,6 +112,7 @@ end
 
 setindex!(D::ShmDict, val, key) = setindex!(D, _byte_repr(val), key)
 function setindex!(D::ShmDict, val::Vector{UInt8}, key)
+    (length(val) > D.maxvalsize) && error("value size $(length(val)) greated than max allowed $(D.maxvalsize)")
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
     if D.used[bucket]
