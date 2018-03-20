@@ -128,7 +128,7 @@ function getindex(D::ShmDict, key::Vector{UInt8})
     error("key not found")
 end
 
-function _setbucket(D::ShmDict, bucket, khash::UInt64, key::Vector{UInt8}, val::Vector{UInt8}, next=0)
+function _setbucket(D::ShmDict, bucket, khash::UInt64, key::Vector{UInt8}, val::Vector{UInt8}, next::UInt32)
     D.used[bucket] = true
     D.khash[bucket] = khash
     D.next[bucket] = next
@@ -146,7 +146,7 @@ function _setbucket(D::ShmDict, bucket, khash::UInt64, key::Vector{UInt8}, val::
     nothing
 end
 
-function _setbucket(D::ShmDict, bucket, khash::UInt64, keyval::Vector{UInt8}, next=0)
+function _setbucket(D::ShmDict, bucket, khash::UInt64, keyval::Vector{UInt8}, next::UInt32)
     D.used[bucket] = true
     D.khash[bucket] = khash
     D.next[bucket] = next
@@ -156,6 +156,7 @@ function _setbucket(D::ShmDict, bucket, khash::UInt64, keyval::Vector{UInt8}, ne
     copy!(D.keyval, valstart, keyval, 1, length(keyval))
     nothing
 end
+
 
 setindex!(D::ShmDict, val, key) = setindex!(D, _byte_repr(val), _byte_repr(key))
 function setindex!(D::ShmDict, val::Vector{UInt8}, key::Vector{UInt8})
@@ -168,6 +169,7 @@ function setindex!(D::ShmDict, val::Vector{UInt8}, key::Vector{UInt8})
     (lval > D.maxvalsize) && error("value size $(lval-lkey-1) greater than max allowed $(D.maxvalsize-D.maxkeysize-1)")
     khash = hash(key)
     bucket = (khash % D.capacity) + 1
+    nextbucket = UInt32(0)
     if D.used[bucket]
         prevbucket = bucket
         while bucket > 0
@@ -182,9 +184,11 @@ function setindex!(D::ShmDict, val::Vector{UInt8}, key::Vector{UInt8})
             (bucket == 0) && error("no space left in dict")
             bucket += D.capacity
             D.next[prevbucket] = bucket
+        else
+            nextbucket = D.next[bucket]
         end
     end
-    _setbucket(D, bucket, khash, key, val)
+    _setbucket(D, bucket, khash, key, val, nextbucket)
     val
 end
 

@@ -11,7 +11,7 @@ end
     end
 end
 
-@everywhere function getindexwithlock!(D, key)
+@everywhere function getindexwithlock(D, key)
     withlock(D.lck) do
         SharedDataStructures.getindex(D, key)
     end
@@ -50,8 +50,8 @@ function test_shm_dict(keepkeys::Bool)
         @test String(copy(master_shmdict["456"])) == "abc"
         @test String(copy(master_shmdict["123"])) == "def"
 
-        @test String(copy(remotecall_fetch(()->getindexwithlock!(shmdict, "456"), W[1]))) == "abc"
-        @test String(copy(remotecall_fetch(()->getindexwithlock!(shmdict, "123"), W[2]))) == "def"
+        @test String(copy(remotecall_fetch(()->getindexwithlock(shmdict, "456"), W[1]))) == "abc"
+        @test String(copy(remotecall_fetch(()->getindexwithlock(shmdict, "123"), W[2]))) == "def"
 
         remotecall_wait(()->(deletewithlock!(shmdict, "123"); nothing), W[1])
         @test !haskey(master_shmdict, "123")
