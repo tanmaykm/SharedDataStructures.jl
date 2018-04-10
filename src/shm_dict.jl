@@ -70,11 +70,17 @@ end
 
 _byte_repr(val::Vector{UInt8}) = val
 _byte_repr(val::String) = convert(Vector{UInt8}, val)
+_byte_repr(val::Number) = reinterpret(UInt8, [val])
 function _byte_repr(val)
     iob = IOBuffer()
     serialize(iob, val)
     take!(iob)
 end
+
+_from_byte_repr(::Type{Vector{UInt8}}, val::Vector{UInt8}) = val
+_from_byte_repr(::Type{T}, val::Vector{UInt8}) where {T<:Number} = reinterpret(T, val)[1]
+_from_byte_repr(::Type{String}, val::Vector{UInt8}) = String(val)
+_from_byte_repr(::Type{T}, val::Vector{UInt8}) where {T} = deserialize(IOBuffer(val))
 
 function _key_matches(D::ShmDict, key, bucket)
     if D.keepkeys
